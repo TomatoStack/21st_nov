@@ -27,7 +27,8 @@ html,body{margin:0;height:100%;background:#1b130c;color:#f5e6c4;overflow:hidden;
 #bar{display:flex;align-items:center;justify-content:space-between;margin-top:8px;pointer-events:none}
 .pill{background:var(--wood);border:2px solid var(--gold);border-radius:6px;padding:4px 12px;font-weight:700;font-size:16px;color:var(--parch)}
 #score{font-size:20px}
-#mute{pointer-events:auto;cursor:pointer;font-size:18px;line-height:1}
+#mute,#pause{pointer-events:auto;cursor:pointer;font-size:18px;line-height:1;transition:opacity .2s}
+#mute.disabled,#pause.disabled{opacity:.35;cursor:not-allowed;pointer-events:none}
 #stage{position:relative;flex:1;min-height:0}
 canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;display:block}
 .overlay{position:fixed;inset:0;z-index:20;display:none;align-items:center;justify-content:center;
@@ -55,6 +56,13 @@ button.btn.alt:active{box-shadow:0 1px 0 #1b3a18}
   text-align:left;font-size:15px;line-height:1.45;user-select:text;-webkit-user-select:text}
 #xClose{position:absolute;top:6px;right:12px;background:none;border:0;color:var(--parch-ink);font-size:28px;cursor:pointer;line-height:1}
 #modal .card{position:relative}
+/* skip-intro button */
+#skipIntro{display:none;position:fixed;z-index:15;left:50%;transform:translateX(-50%);
+  bottom:calc(var(--safe-bottom) + 22px);font:inherit;font-weight:700;font-size:16px;letter-spacing:.04em;
+  color:var(--parch);background:rgba(42,26,14,.92);border:2px solid var(--gold);border-radius:999px;
+  padding:11px 22px;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.6)}
+#skipIntro.show{display:block;animation:pop .3s ease-out}
+#skipIntro:active{transform:translateX(-50%) translateY(2px)}
 </style>
 </head>
 <body>
@@ -64,11 +72,14 @@ button.btn.alt:active{box-shadow:0 1px 0 #1b3a18}
     <div id="bar">
       <div class="pill" id="score">🍦 <span id="scoreN">0</span></div>
       <div class="pill" id="bestPill">Best: <span id="bestN">0</span></div>
-      <div class="pill" id="mute" role="button" aria-label="Toggle sound">🔊</div>
+      <div class="pill" id="pause" role="button" aria-label="Pause game" tabindex="0">⏸️</div>
+      <div class="pill" id="mute" role="button" aria-label="Toggle sound" tabindex="0">🔊</div>
     </div>
   </div>
   <div id="stage"><canvas id="cv"></canvas></div>
 </div>
+
+<button id="skipIntro" type="button" aria-label="Skip intro">Skip intro ⏭</button>
 
 <!-- Start dashboard -->
 <div class="overlay show" id="start">
@@ -121,6 +132,7 @@ const $ = id => document.getElementById(id);
 const cv = $('cv'), ctx = cv.getContext('2d');
 const rand = (a, b) => a + Math.random() * (b - a);
 const pick = a => a[Math.floor(Math.random() * a.length)];
+const clamp01 = v => Math.max(0, Math.min(1, v));
 
 /* ---------- storage (safe) ---------- */
 const store = {
@@ -129,6 +141,130 @@ const store = {
 };
 let best = parseInt(store.get('hg_best', '0'), 10) || 0;
 let muted = store.get('hg_muted', '0') === '1';
+
+/* ---------- audio files ---------- */
+const startAudio = new Audio('1-Congo.m4a');
+const backgroundAudio = new Audio('dramatic.mp3');
+const gameOverAudio = new Audio('4-Oh no.m4a');
+
+startAudio.preload = 'auto';
+backgroundAudio.preload = 'auto';
+backgroundAudio.loop = true;
+backgroundAudio.volume = 0;
+gameOverAudio.preload = 'auto';
+gameOverAudio.volume = 0.8;
+
+/* Short effects use a small pool of elements so rapid repeats overlap,
+   and so every element can be "unlocked" during the first tap (iOS/Safari
+   only allow playback from elements first started by a user gesture). */
+function makePool(src, n = 4) {
+  const items = [];
+  for (let i = 0; i < n; i++) { const a = new Audio(src); a.preload = 'auto'; items.push(a); }
+  return { items, i: 0 };
+}
+const iceCreamPool = makePool('3-Yay.m4a');
+const thunderPool = makePool('2-Boom.m4a');
+
+function playEffect(pool, volume = 0.8) {
+  if (muted) return;
+  const a = pool.items[pool.i++ % pool.items.length];
+  try { a.currentTime = 0; } catch (e) {}
+  a.volume = volume;
+  a.play().catch(() => {});
+}
+
+let audioUnlocked = false;
+function unlockAudio() {
+  if (audioUnlocked) return;
+  audioUnlocked = true;
+  [...iceCreamPool.items, ...thunderPool.items, gameOverAudio].forEach(a => {
+    const vol = a.volume;
+    a.muted = true;
+    a.play().then(() => { a.pause(); try { a.currentTime = 0; } catch (e) {} a.muted = false; a.volume = vol; })
+      .catch(() => { a.muted = false; a.volume = vol; });
+  });
+}
+
+let backgroundFade = null;
+function fadeAudio(audio, fromVolume, toVolume, duration = 1200) {
+  if (backgroundFade) clearInterval(backgroundFade);
+  const startedAt = performance.now();
+  audio.volume = clamp01(fromVolume);
+  backgroundFade = setInterval(() => {
+    const progress = Math.min((performance.now() - startedAt) / duration, 1);
+    audio.volume = clamp01(fromVolume + (toVolume - fromVolume) * progress);
+    if (progress >= 1) {
+      clearInterval(backgroundFade);
+      backgroundFade = null;
+      if (toVolume === 0) audio.pause();
+    }
+  }, 30);
+}
+async function playBackgroundAudio() {
+  if (muted) return;
+  try { backgroundAudio.currentTime = 0; } catch (e) {}
+  backgroundAudio.volume = 0;
+  try {
+    await backgroundAudio.play();
+    fadeAudio(backgroundAudio, 0, 0.35, 1600);
+  } catch (error) {
+    console.warn('Could not play background audio:', error);
+  }
+}
+function stopBackgroundAudio() { fadeAudio(backgroundAudio, backgroundAudio.volume, 0, 1200); }
+
+function stopGameOverAudio() {
+  gameOverAudio.pause();
+  try { gameOverAudio.currentTime = 0; } catch (e) {}
+}
+function playGameOverAudio() {
+  if (muted) return;
+  stopBackgroundAudio();
+  try { gameOverAudio.currentTime = 0; } catch (e) {}
+  gameOverAudio.play().catch(error => console.warn('Could not play game-over audio:', error));
+}
+
+/* ---------- intro (can be skipped; pause/mute locked while it plays) ---------- */
+let introPlaying = false;
+let introFinish = null;
+let starting = false;
+
+function playStartAudio() {
+  if (muted) return Promise.resolve();
+  return new Promise(resolve => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      startAudio.removeEventListener('ended', finish);
+      startAudio.removeEventListener('error', finish);
+      introFinish = null;
+      resolve();
+    };
+    introFinish = finish;
+    startAudio.addEventListener('ended', finish);
+    startAudio.addEventListener('error', finish);
+    try { startAudio.currentTime = 0; } catch (e) {}
+    startAudio.play().catch(error => {
+      console.warn('Could not play start audio:', error);
+      finish();
+    });
+  });
+}
+function skipIntro() {
+  if (!introPlaying) return;
+  startAudio.pause();
+  if (introFinish) introFinish();
+}
+function setIntroUI(on) {
+  introPlaying = on;
+  $('skipIntro').classList.toggle('show', on);
+  for (const id of ['pause', 'mute']) {
+    $(id).classList.toggle('disabled', on);
+    $(id).setAttribute('aria-disabled', on ? 'true' : 'false');
+  }
+  paintPause();
+}
 
 /* ---------- canvas sizing ---------- */
 let W = 0, H = 0, S = 1, DPR = 1, HW = 300, HH = 500;
@@ -199,6 +335,9 @@ function drawTorches(t) {
     ctx.fillStyle = '#ffe27a'; ell(x, y - 22, 3, 5.5 * f); ctx.fill();
   }
 }
+const shooterY = () => HH - 64;          // ballista pivot, on the castle wall at the bottom
+let aim = -Math.PI / 2;
+let fireCd = 0;
 function drawBallista() {
   ctx.save(); ctx.translate(0, shooterY());
   ctx.fillStyle = '#5a3a1a'; ctx.fillRect(-18, 2, 36, 8);                     // base
@@ -217,7 +356,7 @@ function drawBallista() {
 window.addEventListener('resize', resize);
 window.addEventListener('orientationchange', () => setTimeout(resize, 150));
 
-/* ---------- audio (synthesised Web Audio, no files) ---------- */
+/* ---------- synthesised Web Audio sfx ---------- */
 let AC = null;
 function ac() {
   if (!AC) { try { AC = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} }
@@ -283,8 +422,9 @@ const SCOOPS = ['🍦', '🍨', '🍧', '🍡'];
 
 /* ---------- game state ---------- */
 let state = 'menu';            // menu | play | over
+let paused = false;
 let enemies, shots, treats, parts, floats, bolts;
-let score, tier, gt, spawnT, tipT, tipI, fireCd, flash, shake, snipT, spawnCount;
+let score, tier, gt, spawnT, tipT, tipI, flash, shake, snipT, spawnCount;
 const ptr = { down: false, x: 0, y: 0 };
 
 function reset() {
@@ -295,23 +435,66 @@ function reset() {
 }
 reset();
 
-function startGame() {
-  ac(); reset(); state = 'play';
-  $('start').classList.remove('show'); $('over').classList.remove('show'); $('modal').classList.remove('show');
+async function startGame(playIntro = true) {
+  if (starting) return;                  // ignore double taps
+  starting = true;
+
+  ac();
+  unlockAudio();
+  stopGameOverAudio();
+  reset();
+  state = 'play';
+
+  $('start').classList.remove('show');
+  $('over').classList.remove('show');
+  $('modal').classList.remove('show');
+
+  if (playIntro && !muted) {
+    paused = true;
+    setIntroUI(true);                    // locks pause + mute, shows "Skip intro"
+    playBackgroundAudio();
+    await playStartAudio();              // resolves when the intro ends OR is skipped
+    stopBackgroundAudio();
+    setIntroUI(false);
+  }
+
+  paused = false;
+  paintPause();
+
+  // Spawn immediately instead of waiting for spawnT.
+  spawnEnemy();
+  spawnT = spawnGap() * rand(0.8, 1.2);
+
   chatHoldUntil = 0;
-  say('System', 'Congratulations! You have been appointed as the Official Hair Guard. Now you have to protect Xiaokeai\'s hair from time-traveling lesbians.', COL.system, 5.5, true);
+  say('System', 'Do a good job! Make sure Xiaokeai keeps her hair! 💇‍♀️', COL.system, 5.5, true);
+  starting = false;
 }
 
 function gameOver() {
-  state = 'over'; snipT = 0.001; shake = 18; flash = 0.5; sfx.snip();
+  state = 'over';
+  snipT = 0.001;
+  shake = 18;
+  flash = 0.5;
+
+  sfx.snip();
+  playGameOverAudio();
+
   say('Xiaokeai', 'Noooo, my hair!', COL.xiao, 99, true);
+
   const isNew = score > best;
-  if (isNew) { best = score; store.set('hg_best', String(best)); }
+  if (isNew) {
+    best = score;
+    store.set('hg_best', String(best));
+  }
+
   refreshBest();
   $('finalN').textContent = score;
   $('newRec').textContent = isNew && score > 0 ? '🎉 New personal record!' : '';
   ptr.down = false;
-  setTimeout(() => { if (state === 'over') $('over').classList.add('show'); }, 1100);
+
+  setTimeout(() => {
+    if (state === 'over') $('over').classList.add('show');
+  }, 1100);
 }
 function refreshBest() { $('bestN').textContent = best; $('bestStart').textContent = best; $('bestOver').textContent = best; }
 refreshBest();
@@ -355,6 +538,7 @@ const speedMul = () => 1 + 0.09 * tier + Math.min(0.5, gt * 0.004);
 const spawnGap = () => Math.max(0.5, 1.9 - gt * 0.016 - tier * 0.05);
 
 /* ---------- input ---------- */
+const canPlay = () => state === 'play' && !paused && !introPlaying;
 function toWorld(ev) {
   const r = cv.getBoundingClientRect();
   return { x: (ev.clientX - r.left - r.width / 2) / S, y: (ev.clientY - r.top - r.height / 2) / S };
@@ -368,8 +552,6 @@ function collectAt(x, y, rad) {
   return got;
 }
 function overTreat(x, y) { return treats.some(t => Math.hypot(t.x - x, t.y - y) < 36); }
-const shooterY = () => HH - 64;          // ballista pivot, on the castle wall at the bottom
-let aim = -Math.PI / 2;
 function tryFire(x, y) {
   if (fireCd > 0) return;
   const oy = shooterY();
@@ -379,13 +561,14 @@ function tryFire(x, y) {
   fireCd = 0.12; sfx.shoot();
 }
 cv.addEventListener('pointerdown', ev => {
-  ac(); if (state !== 'play') return;
+  ac();
+  if (!canPlay()) return;
   ev.preventDefault(); try { cv.setPointerCapture(ev.pointerId); } catch (e) {}
   const p = toWorld(ev); ptr.down = true; ptr.x = p.x; ptr.y = p.y;
   if (!collectAt(p.x, p.y, 38)) tryFire(p.x, p.y);     // ice cream has hit priority
 });
 cv.addEventListener('pointermove', ev => {
-  if (!ptr.down || state !== 'play') return;
+  if (!ptr.down || !canPlay()) return;
   const p = toWorld(ev); ptr.x = p.x; ptr.y = p.y;
   collectAt(p.x, p.y, 34);                              // swipe-to-collect
 });
@@ -400,11 +583,18 @@ function burst(x, y, color, n = 16) {
   }
 }
 function collect(t) {
-  score++; $('scoreN').textContent = score; sfx.chime();
+  score++;
+  $('scoreN').textContent = score;
+
+  sfx.chime();
+  playEffect(iceCreamPool, 0.75);
+
   floats.push({ x: t.x, y: t.y - 10, t: 0.9, text: '+1 🍦' });
   burst(t.x, t.y, '#ffd93d', 8);
+
   if (score % 10 === 0) {
-    tier++; sfx.levelup();
+    tier++;
+    sfx.levelup();
     say('Xiaokeai', `${score} ice creams! Thank you, Guard! …Uh oh, the timelines are speeding up!`, COL.xiao, 3.5, true);
     if (tier === 1) floats.push({ x: 0, y: -90, t: 1.4, text: '⚔️ Knights incoming!' });
   }
@@ -417,6 +607,7 @@ function killEnemy(e) {
 
 /* ---------- update ---------- */
 function update(dt) {
+  if (paused) return;
   tNow += dt;
   if (flash > 0) flash = Math.max(0, flash - dt * 2.2);
   if (shake > 0) shake = Math.max(0, shake - dt * 30);
@@ -446,9 +637,19 @@ function update(dt) {
     if (e.state === 'warn') {
       e.t -= dt;
       if (e.t <= 0) {
-        e.state = 'alive'; flash = Math.max(flash, 0.35); shake = Math.max(shake, 6);
-        sfx.thunder(); strikeBolt(e); burst(e.x, e.y, e.accent, 14);
-        if (tNow - lastChatAt > 3 && Math.random() < 0.35) say(e.name, pick(TYPES[e.type].lines), e.accent, 2.6);
+        e.state = 'alive';
+        flash = Math.max(flash, 0.35);
+        shake = Math.max(shake, 6);
+
+        sfx.thunder();
+        playEffect(thunderPool, 0.9);
+
+        strikeBolt(e);
+        burst(e.x, e.y, e.accent, 14);
+
+        if (tNow - lastChatAt > 3 && Math.random() < 0.35) {
+          say(e.name, pick(TYPES[e.type].lines), e.accent, 2.6);
+        }
       }
       continue;
     }
@@ -646,6 +847,15 @@ function render(t) {
   ctx.restore();
 
   if (flash > 0) { ctx.fillStyle = `rgba(255,255,255,${Math.min(0.6, flash)})`; ctx.fillRect(0, 0, W, H); }
+
+  if (paused && !introPlaying && state === 'play') {          // pause veil
+    ctx.fillStyle = 'rgba(20,12,6,.55)'; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#f5e6c4'; ctx.font = '900 40px Georgia, serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('⏸ Paused', W / 2, H / 2);
+    ctx.font = 'italic 16px Georgia, serif'; ctx.fillText('Tap ▶️ to resume', W / 2, H / 2 + 34);
+    ctx.textBaseline = 'alphabetic';
+  }
 }
 
 /* ---------- main loop ---------- */
@@ -656,10 +866,57 @@ function frame(now) {
   requestAnimationFrame(frame);
 }
 
+/* ---------- pause / mute ---------- */
+function paintPause() {
+  const showPaused = paused && !introPlaying;
+  $('pause').textContent = showPaused ? '▶️' : '⏸️';
+  $('pause').setAttribute('aria-label', showPaused ? 'Resume game' : 'Pause game');
+}
+function togglePause() {
+  if (state !== 'play' || introPlaying) return;
+  paused = !paused;
+  if (paused) ptr.down = false;
+  paintPause();
+}
+function paintMute() { $('mute').textContent = muted ? '🔇' : '🔊'; }
+function toggleMute() {
+  if (introPlaying) return;               // locked while the intro plays
+  ac();
+  muted = !muted;
+  store.set('hg_muted', muted ? '1' : '0');
+  if (muted) {
+    stopGameOverAudio();
+    stopBackgroundAudio();
+  }
+  paintMute();
+}
+$('pause').addEventListener('click', togglePause);
+$('mute').addEventListener('click', toggleMute);
+['pause', 'mute'].forEach(id => $(id).addEventListener('keydown', e => {
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); (id === 'pause' ? togglePause : toggleMute)(); }
+}));
+$('skipIntro').addEventListener('click', skipIntro);
+
+window.addEventListener('keydown', e => {
+  if (e.repeat) return;
+  const k = e.key.toLowerCase();
+  if (introPlaying) {
+    if (k === 'escape' || k === 'enter' || k === ' ') { e.preventDefault(); skipIntro(); }
+    return;
+  }
+  if (k === 'p' || k === 'escape') togglePause();
+  else if (k === 'm') toggleMute();
+});
+
+// auto-pause when the tab/app goes to the background
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden && state === 'play' && !paused && !introPlaying) { paused = true; ptr.down = false; paintPause(); }
+});
+
 /* ---------- UI wiring ---------- */
 const shareText = () => `🍦✨ I have collected ${score} ice-creams during my first day as professional hair-guard! 🛡️💇‍♀️ Would you like to eat the ice-creams with me? 🍨💕`;
-$('startBtn').addEventListener('click', startGame);
-$('againBtn').addEventListener('click', startGame);
+$('startBtn').addEventListener('click', () => startGame(true));
+$('againBtn').addEventListener('click', () => startGame(false));
 $('shareBtn').addEventListener('click', () => {
   $('shareMsg').textContent = shareText(); $('copyBtn').textContent = 'Copy Text'; $('modal').classList.add('show');
 });
@@ -676,11 +933,10 @@ $('copyBtn').addEventListener('click', async () => {
   }
   $('copyBtn').textContent = ok ? 'Copied! ✅' : 'Press and hold the text to copy';
 });
-function paintMute() { $('mute').textContent = muted ? '🔇' : '🔊'; }
-$('mute').addEventListener('click', () => { ac(); muted = !muted; store.set('hg_muted', muted ? '1' : '0'); paintMute(); });
-paintMute();
 
-say('System', 'Tap Start Game to become the Official Hair Guard!', COL.system, 1, true);
+paintMute();
+paintPause();
+say('System', 'Congratulations! You have been appointed as the Official Hair Guard. Now you have to protect Xiaokeai\'s hair from the time-traveling lesbians. Best of luck!', COL.system, 1, true);
 resize(); requestAnimationFrame(frame);
 // iOS: layout may settle after first paint
 setTimeout(resize, 100);
