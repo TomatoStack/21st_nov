@@ -406,9 +406,9 @@ const TYPES = {
   rogue: { speed: 100, hp: 1, accent: '#7ddf7d', outfit: '#2f5d34', hair: ['#2a2a2a', '#7a3b1e', '#c1440e'],
     lines: ['Shh… I only want a snippet.', 'The finest thieves steal hearts. I steal hair.', 'Nobody sees the shadow with the shears.'] },
   noble: { speed: 62, hp: 1, accent: '#d9a0ff', outfit: '#7a2a8a', hair: ['#c9a227', '#5a3a1a', '#e8e0d0'],
-    lines: ['By royal decree, that lock is mine!', 'A lady of the court demands a trim.', 'Fetch my finest shears, dear squire!'] },
+    lines: ['By royal decree, that lock is mine!', 'A lady of the court demands a trim.', 'Fetch my finest shears, dear squire!', 'We need just a little bit of her hair to save our civilization.'] },
   knight: { speed: 74, hp: 2, accent: '#f0c040', outfit: '#8d97a3', hair: ['#222222'],
-    lines: ['For the crown and the haircut!', 'Hark! Yield thy tresses, Guard!', 'I crossed a thousand years for this lock! Now we can reproduce.'] }
+    lines: ['For the crown and the haircut!', 'Hark! Yield thy tresses, Guard!', 'I crossed a thousand years for this lock! We are running out of lesbians.', 'Her hair is essential for our civilisation.'] }
 };
 const NAMES = ['Marico', 'Rachel', 'Janice', 'Sloane', 'Vivienne', 'Odette', 'Zara', 'Ingrid', 'Mireille',
   'Tamsin', 'Delphine', 'Cleo', 'Rosalind', 'Nyx', 'Isolde', 'Priya', 'Saoirse', 'Anastasia', 'Bellatrix'];
@@ -595,7 +595,7 @@ function collect(t) {
   if (score % 10 === 0) {
     tier++;
     sfx.levelup();
-    say('Xiaokeai', `${score} ice creams! Thank you, Guard! …Uh oh, the timelines are speeding up!`, COL.xiao, 3.5, true);
+    say('Xiaokeai', `${score} ice creams! Thank you, Guard! …Uh oh, the timelines are speeding up! They are arriving again in more numbers!!`, COL.xiao, 3.5, true);
     if (tier === 1) floats.push({ x: 0, y: -90, t: 1.4, text: '⚔️ Knights incoming!' });
   }
 }
